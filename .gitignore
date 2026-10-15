@@ -1,0 +1,17 @@
+# Local secrets and machine state
+.env
+.env.*
+!.env.example
+.claude/settings.local.json
+.DS_Store
+Thumbs.db
+
+# Generated environments and outputs
+node_modules/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+dist/
+coverage/
+tmp/
