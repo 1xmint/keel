@@ -22,9 +22,10 @@ jobs:
     # Real Windows, no model access: install from this checkout, then run the installed plugin's
     # hook commands through Git Bash, Windows PowerShell, and PowerShell 7.
     runs-on: windows-latest
-    env:
-      CLAUDE_CONFIG_DIR: ${{ runner.temp }}\claude-config
     steps:
+      - name: Use a throwaway Claude Code configuration
+        shell: bash
+        run: echo "CLAUDE_CONFIG_DIR=$RUNNER_TEMP/claude-config" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
