@@ -3,6 +3,8 @@
 # Uses a throwaway CLAUDE_CONFIG_DIR, so the caller's own configuration is untouched.
 # Makes a few short model calls with the caller's existing Claude Code authentication.
 # Every step must observably succeed; a missing session, transcript, or failed command is a FAIL.
+# The full output of every command and the session transcripts are kept in a diagnostics
+# directory (KEEL_LIFECYCLE_LOGS, or a new temporary directory), printed at the end.
 #
 # Usage: scripts/check-lifecycle.sh [marketplace-source]   (default: this checkout)
 set -uo pipefail
@@ -20,34 +22,54 @@ done
 unset CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_REMOTE_SESSION_ID CLAUDE_CODE_CHILD_SESSION
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+LOGDIR="${KEEL_LIFECYCLE_LOGS:-$(mktemp -d -t keel-lifecycle-XXXXXX)}"
+mkdir -p "$LOGDIR"
+keep_diagnostics() {
+  [ -d "$WORK/config/projects" ] && cp -R "$WORK/config/projects" "$LOGDIR/transcripts" 2>/dev/null
+  rm -rf "$WORK"
+  echo "Diagnostics: $LOGDIR"
+}
+trap keep_diagnostics EXIT
 export CLAUDE_CONFIG_DIR="$WORK/config"
 mkdir -p "$CLAUDE_CONFIG_DIR" "$WORK/project"
 cd "$WORK/project" && git init -q
 
 failures=0
+# Save one command's full output to the diagnostics directory. Usage: save_log label output
+# (Named by time, because some callers run in subshells where a counter would not advance.)
+save_log() {
+  printf '%s\n' "$2" > "$LOGDIR/$(date +%s%N)-$(printf '%s' "$1" | tr -c 'A-Za-z0-9' '-' | cut -c1-50).log"
+}
 pass() { printf 'PASS  %s\n' "$1"; }
 fail() { printf 'FAIL  %s\n' "$1"; [ -n "${2:-}" ] && printf '      %s\n' "$2" | head -n 5; failures=$((failures + 1)); }
 check() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1 (expected $3, got $2)"; fi; }
 
 # Run a command; on failure record it with its output. Usage: step "label" cmd args...
 step() {
-  local label="$1" out; shift
-  if out="$("$@" 2>&1)"; then return 0; fi
+  local label="$1" out status; shift
+  out="$("$@" 2>&1 < /dev/null)"; status=$?
+  save_log "$label" "\$ $* (exit $status)"$'\n'"$out"
+  [ "$status" -eq 0 ] && return 0
   fail "$label" "$out"; return 1
 }
 
 # Start or resume a headless session and print its session id. It runs inside command
 # substitution, so its diagnostics go to stderr; the empty id then fails every check that uses it.
 run_session() {
-  local label="$1" out sid; shift
-  if ! out="$(claude -p "$@" --output-format json 2>&1)"; then fail "$label: claude exited non-zero" "$out" >&2; return 1; fi
+  local label="$1" out errfile errtext sid status; shift
+  # stdin is closed and stderr kept apart: the CLI can print warnings to stderr, which must not
+  # be parsed as the JSON result.
+  errfile="$(mktemp)"
+  out="$(claude -p "$@" --output-format json 2>"$errfile" < /dev/null)"; status=$?
+  errtext="$(cat "$errfile")"; rm -f "$errfile"
+  save_log "$label" "\$ claude -p $* --output-format json (exit $status)"$'\n'"$out"$'\n'"--- stderr ---"$'\n'"$errtext"
+  if [ "$status" -ne 0 ]; then fail "$label: claude exited non-zero" "$errtext $out" >&2; return 1; fi
   sid="$(printf '%s' "$out" | python3 -I -c '
 import json, sys
 d = json.load(sys.stdin)
 if d.get("is_error") or not d.get("session_id"):
     sys.exit(1)
-print(d["session_id"])' 2>/dev/null)" || { fail "$label: no successful session result" "$out" >&2; return 1; }
+print(d["session_id"])' 2>/dev/null)" || { fail "$label: no successful session result" "$out $errtext" >&2; return 1; }
   printf '%s' "$sid"
 }
 
@@ -79,7 +101,9 @@ check "startup injects core once" "$(count "$CORE_MARK" "$SID")" 1
 check "startup injects Claude Code notes once" "$(count "$HOST_MARK" "$SID")" 1
 
 # The model can see it
-if reply="$(claude -p "If your context contains a section titled 'Keel: engineering partner', reply exactly YES. Otherwise reply exactly NO." 2>&1)"; then
+reply="$(claude -p "If your context contains a section titled 'Keel: engineering partner', reply exactly YES. Otherwise reply exactly NO." 2>&1 < /dev/null)"; rstatus=$?
+save_log "model sees the core" "(exit $rstatus)"$'\n'"$reply"
+if [ "$rstatus" -eq 0 ]; then
   case "$reply" in *YES*) pass "model sees the core";; *) fail "model sees the core" "$reply";; esac
 else
   fail "model sees the core: claude exited non-zero" "$reply"
@@ -131,7 +155,9 @@ check "uninstalled: fresh session has no core" "$(count "$CORE_MARK" "$GONE")" 0
 # and the session still answers.
 BROKEN="$WORK/broken"
 cp -R "$REPO/plugin" "$BROKEN" && rm "$BROKEN/core.md"
-if events="$(claude -p --plugin-dir "$BROKEN" "Reply with exactly: OK" --output-format stream-json --verbose 2>&1)"; then
+events="$(claude -p --plugin-dir "$BROKEN" "Reply with exactly: OK" --output-format stream-json --verbose 2>/dev/null < /dev/null)"; estatus=$?
+save_log "missing core file session" "(exit $estatus)"$'\n'"$events"
+if [ "$estatus" -eq 0 ]; then
   verdict="$(printf '%s\n' "$events" | python3 -I -c '
 import json, sys
 core_error = notes_ok = answered = False
