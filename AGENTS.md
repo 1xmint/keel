@@ -22,7 +22,8 @@ Read README.md for the product goal, then inspect the relevant source and curren
 ## Validation
 
 - `claude plugin validate --strict ./plugin` and `claude plugin validate --strict .` check the plugin and marketplace manifests. CI runs these.
-- `scripts/check-lifecycle.sh` checks install, activation on startup, resume, compaction, and `/clear`, then disable, uninstall, and hook failure. It runs against a real Claude Code CLI in a throwaway configuration and makes a few short model calls. Run it on every platform and version the README claims.
+- `scripts/check-lifecycle.sh` checks install, activation on startup, resume, compaction, and `/clear`, then disable, uninstall, and hook failure. It runs against a real Claude Code CLI in a throwaway configuration, makes a few short model calls, and keeps every command's output and the session transcripts in a diagnostics directory. Run it on every platform and version the README claims.
+- `scripts/check-hook-shells.py PLUGIN_ROOT` runs the hook commands through each shell Claude Code may use on the platform. `scripts/check-session-hooks.py present|absent` checks whether a real session received the guidance at startup. Neither needs model access; CI runs both on Linux and Windows.
 - `claude plugin eval ./plugin --scaffold --trust-plugin --keep-temp --json results.json --allow-tools Write Edit Bash` runs the behavior cases in `plugin/evals/` against the no-plugin baseline. It uses the caller's model usage, and cases that need Bash require the host sandbox (on Linux, `bubblewrap` and `socat`). Grader names carry their category: `record-`, `practice-`, `effort-`, or `signal-`.
 - `scripts/check-outcomes.py results.json` runs the projects those eval runs produced and checks observable behavior: tests, HTTP requests, persisted data, and rendered output. Each check reports one of four statuses:
   - `pass`
