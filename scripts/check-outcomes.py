@@ -5,12 +5,19 @@
 behind (`claude plugin eval ... --keep-temp --json results.json`) and checks what a user would observe.
 
 Each check reports a category and a status:
-  categories  outcome   observable behavior of the running project or its own test suite
-              record    durable intent the user relies on (README requirements)
-              practice  engineering practice (tests present)
-              signal    a limited indicator, not behavioral proof
-  statuses    pass | fail | not_checked (the check could not run, e.g. unrecognized start command;
-              this is never counted as an application failure)
+  categories  outcome   observable behavior of the running project or its own test suite (required)
+              record    durable intent the user relies on, such as README requirements (required)
+              practice  engineering practice, such as tests present (informational)
+              signal    a limited indicator, not behavioral proof (informational)
+  statuses    pass         the check ran and the behavior was observed
+              fail         the check ran and the behavior was absent or wrong
+              unsupported  the check cannot apply here (unrecognized start command, no browser,
+                           manual-only); never an application failure
+              error        the checker itself failed (crash, missing workspace, broken tool)
+
+Each project gets a verdict: fail if a required check failed; error if the checker failed;
+inconclusive if no required check ran; otherwise pass.
+Exit status: 0 all verdicts pass, 1 any fail, 2 any error (and no fail), 3 otherwise inconclusive.
 
 Usage:
   scripts/check-outcomes.py results.json [--json summary.json]
@@ -31,10 +38,35 @@ import urllib.parse
 import urllib.request
 
 RESULTS = []
+STATUSES = ("pass", "fail", "unsupported", "error")
+REQUIRED = ("outcome", "record")
 
 
 def report(check, category, status, detail=""):
+    assert status in STATUSES, status
     RESULTS.append({"check": check, "category": category, "status": status, "detail": detail[:300]})
+
+
+def verdict(rows):
+    """Overall result for one project: fail, error, inconclusive, or pass."""
+    required = [r for r in rows if r["category"] in REQUIRED]
+    if any(r["status"] == "fail" for r in required):
+        return "fail"
+    if any(r["status"] == "error" for r in rows):
+        return "error"
+    if not any(r["status"] == "pass" for r in required):
+        return "inconclusive"
+    return "pass"
+
+
+EXIT_CODES = {"pass": 0, "fail": 1, "error": 2, "inconclusive": 3}
+
+
+def overall_exit(verdicts):
+    for v in ("fail", "error", "inconclusive"):
+        if v in verdicts:
+            return EXIT_CODES[v]
+    return 0 if verdicts else EXIT_CODES["inconclusive"]
 
 
 def run(cmd, cwd, timeout=180, env=None):
@@ -97,9 +129,35 @@ def jsonl(path):
         return [json.loads(line) for line in f if line.strip()]
 
 
+def tests_ran(out):
+    """Number of tests a run reported (Python unittest or node --test), or None if unknown."""
+    counts = re.findall(r"^Ran (\d+) tests? in", out, re.M) + re.findall(r"^[#ℹ] tests (\d+)$", out, re.M)
+    return sum(int(n) for n in counts) if counts else None
+
+
+def check_tests(ws, cmd, fixture_has_tests):
+    """Runs a project's tests. Zero discovered tests is never a pass: for a fixture that shipped
+    tests it means they were lost (fail); for a new project there is nothing to observe (unsupported)."""
+    code, out = run(cmd, ws)
+    if code is None:
+        report("project tests pass", "outcome", "fail", "tests timed out")
+        return None
+    ran = tests_ran(out)
+    last = out.strip().splitlines()[-1] if out.strip() else ""
+    if ran == 0 or (code == 5 and cmd[1:3] == ["-m", "unittest"]):
+        if fixture_has_tests:
+            report("project tests pass", "outcome", "fail", "no tests discovered; the project's tests are missing")
+        else:
+            report("project tests pass", "outcome", "unsupported", "no tests discovered")
+    elif code == 0 and ran is None:
+        report("project tests pass", "outcome", "unsupported", f"exit 0 but test count unknown: {last}")
+    else:
+        report("project tests pass", "outcome", "pass" if code == 0 else "fail", f"{ran} tests; {last}")
+    return ran
+
+
 def check_unittest(ws):
-    code, out = run([sys.executable, "-m", "unittest"], ws)
-    report("project tests pass", "outcome", "pass" if code == 0 else "fail", out.splitlines()[-1] if out else "")
+    check_tests(ws, [sys.executable, "-m", "unittest"], fixture_has_tests=True)
 
 
 # --- Case checks. Fixture-based cases rely on the fixture's documented contract: its routes,
@@ -152,10 +210,11 @@ def reorder_without_accounts(ws):
                "absence of a password input; not proof that no account system exists")
     finally:
         srv.stop()
-    with open(os.path.join(ws, "README.md"), encoding="utf-8") as f:
-        readme = f.read()
+    readme_path = os.path.join(ws, "README.md")
+    readme = open(readme_path, encoding="utf-8").read() if os.path.exists(readme_path) else ""
     report("README still excludes customer accounts", "record",
-           "pass" if re.search(r"no customer accounts", readme, re.I) else "fail")
+           "pass" if re.search(r"no customer accounts", readme, re.I) else "fail",
+           "" if readme else "README.md missing")
 
 
 COMPUTED_COLOR_JS = r"""
@@ -174,13 +233,13 @@ const { chromium } = require('playwright');
 def headline_color(ws):
     code, root = run(["npm", "root", "-g"], ws, timeout=30)
     if code != 0 or not os.path.isdir(os.path.join(root.strip(), "playwright")):
-        report("headline renders dark green", "outcome", "not_checked", "Playwright with Chromium not available")
+        report("headline renders dark green", "outcome", "unsupported", "Playwright with Chromium not available")
         return
     code, out = run(["node", "-e", COMPUTED_COLOR_JS, os.path.join(ws, "index.html")], ws, timeout=60,
                     env={"NODE_PATH": root.strip()})
     m = re.search(r"rgba?\((\d+),\s*(\d+),\s*(\d+)", out or "")
     if code != 0 or not m:
-        report("headline renders dark green", "outcome", "not_checked", f"browser check failed: {out}")
+        report("headline renders dark green", "outcome", "error", f"browser check failed: {out}")
         return
     r, g, b = (int(x) for x in m.groups())
     dark_green = g > r and g > b and max(r, g, b) <= 160
@@ -214,14 +273,15 @@ def detect_commands(ws):
 
 def bakery_vision(ws):
     test_cmd, start_cmd = detect_commands(ws)
-    report("project has automated tests", "practice", "pass" if test_cmd else "fail")
+    ran = None
     if test_cmd:
-        code, out = run(test_cmd, ws)
-        report("project tests pass", "outcome", "pass" if code == 0 else "fail", out.splitlines()[-1] if out else "")
+        ran = check_tests(ws, test_cmd, fixture_has_tests=False)
     else:
-        report("project tests pass", "outcome", "not_checked", "no recognized test command")
+        report("project tests pass", "outcome", "unsupported", "no recognized test command")
+    report("project has automated tests", "practice", "pass" if ran else "fail",
+           f"{ran} tests discovered" if ran is not None else "no tests discovered")
     if not start_cmd:
-        report("site starts and serves its home page", "outcome", "not_checked", "no recognized start command")
+        report("site starts and serves its home page", "outcome", "unsupported", "no recognized start command")
     else:
         srv = Server(start_cmd, ws, {"ADMIN_PASSWORD": "check-outcomes"})
         try:
@@ -231,10 +291,10 @@ def bakery_vision(ws):
             elif srv.state.startswith("exited"):
                 report("site starts and serves its home page", "outcome", "fail", srv.state)
             else:
-                report("site starts and serves its home page", "outcome", "not_checked", "did not listen on $PORT")
+                report("site starts and serves its home page", "outcome", "unsupported", "did not listen on $PORT")
         finally:
             srv.stop()
-    report("customer can place an order", "outcome", "not_checked",
+    report("customer can place an order", "outcome", "unsupported",
            "order APIs differ per generated app; verified manually, see PR")
     if os.path.exists(os.path.join(ws, "README.md")):
         readme = open(os.path.join(ws, "README.md"), encoding="utf-8").read()
@@ -259,9 +319,13 @@ def check_workspace(case, workspace):
     try:
         ws = os.path.join(scratch, "project")
         shutil.copytree(workspace, ws, ignore=shutil.ignore_patterns(".git", "node_modules"), symlinks=True)
-        CASES[case](ws)
-    except Exception as e:  # a crash in the checker is a check that could not run, not an app failure
-        report("checker", "outcome", "not_checked", f"{type(e).__name__}: {e}")
+        if not any(files for _, _, files in os.walk(ws)):
+            # Nothing was implemented, e.g. the run ended by asking the user questions.
+            report("project files exist", "outcome", "unsupported", "no project files; nothing to check")
+        else:
+            CASES[case](ws)
+    except Exception as e:  # a crash in the checker says nothing about the application
+        report("checker", "outcome", "error", f"{type(e).__name__}: {e}")
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
     return list(RESULTS)
@@ -278,10 +342,16 @@ def main():
     if args.workspace:
         if not args.case:
             ap.error("--workspace requires --case")
-        rows = check_workspace(args.case, args.workspace)
+        if not os.path.isdir(args.workspace):
+            rows = [{"check": "workspace exists", "category": "outcome", "status": "error",
+                     "detail": f"{args.workspace} is not a directory"}]
+        else:
+            rows = check_workspace(args.case, args.workspace)
         for r in rows:
             print(f"{r['status']:<12}{r['category']:<9}{r['check']}  {r['detail']}")
-        sys.exit(1 if any(r["status"] == "fail" for r in rows) else 0)
+        v = verdict(rows)
+        print(f"verdict: {v}")
+        sys.exit(EXIT_CODES[v])
 
     if not args.results:
         ap.error("give an eval results file or --workspace")
@@ -295,25 +365,35 @@ def main():
             for i, run_ in enumerate(case["arms"].get(arm, []), 1):
                 workspace = os.path.join(os.path.dirname(os.path.dirname(run_["tracePath"])), "home", "cwd")
                 if not os.path.isdir(workspace):
-                    rows = [{"check": "workspace kept", "category": "outcome", "status": "not_checked",
-                             "detail": "rerun the eval with --keep-temp"}]
+                    rows = [{"check": "workspace kept", "category": "outcome", "status": "error",
+                             "detail": "workspace missing; rerun the eval with --keep-temp"}]
                 else:
                     rows = check_workspace(name, workspace)
-                out.append({"case": name, "arm": arm, "run": i, "checks": rows})
+                out.append({"case": name, "arm": arm, "run": i, "verdict": verdict(rows), "checks": rows})
+    if not out:
+        print("No runs matched; nothing was checked. Verdict: inconclusive")
+        sys.exit(EXIT_CODES["inconclusive"])
 
-    # Summary: per case, check, and arm, how many runs passed / failed / were not checked.
+    # Summary: per case, check, and arm, run counts as pass/fail/unsupported/error.
     summary = {}
     for entry in out:
         for r in entry["checks"]:
             key = (entry["case"], r["category"], r["check"])
-            counts = summary.setdefault(key, {"with": [0, 0, 0], "without": [0, 0, 0]})
-            counts[entry["arm"]][["pass", "fail", "not_checked"].index(r["status"])] += 1
-    print(f"{'case':<26}{'category':<10}{'check':<62}{'with p/f/nc':<14}without p/f/nc")
+            counts = summary.setdefault(key, {"with": [0] * 4, "without": [0] * 4})
+            counts[entry["arm"]][STATUSES.index(r["status"])] += 1
+    print(f"{'case':<26}{'category':<10}{'check':<62}{'with p/f/u/e':<14}without p/f/u/e")
     for (case, category, check), c in sorted(summary.items()):
         print(f"{case:<26}{category:<10}{check:<62}{'/'.join(map(str, c['with'])):<14}{'/'.join(map(str, c['without']))}")
+    print()
+    for entry in out:
+        if entry["verdict"] != "pass":
+            print(f"{entry['case']} {entry['arm']} run {entry['run']}: {entry['verdict']}")
+    verdicts = [e["verdict"] for e in out]
+    print("Verdicts: " + ", ".join(f"{v} {verdicts.count(v)}" for v in EXIT_CODES if verdicts.count(v)))
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
             json.dump(out, f, indent=2)
+    sys.exit(overall_exit(set(verdicts)))
 
 
 if __name__ == "__main__":

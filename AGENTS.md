@@ -24,7 +24,13 @@ Read README.md for the product goal, then inspect the relevant source and curren
 - `claude plugin validate --strict ./plugin` and `claude plugin validate --strict .` check the plugin and marketplace manifests. CI runs these.
 - `scripts/check-lifecycle.sh` checks install, activation on startup, resume, compaction, and `/clear`, then disable, uninstall, and hook failure. It runs against a real Claude Code CLI in a throwaway configuration and makes a few short model calls. Run it on every platform and version the README claims.
 - `claude plugin eval ./plugin --scaffold --trust-plugin --keep-temp --json results.json --allow-tools Write Edit Bash` runs the behavior cases in `plugin/evals/` against the no-plugin baseline. It uses the caller's model usage, and cases that need Bash require the host sandbox (on Linux, `bubblewrap` and `socat`). Grader names carry their category: `record-`, `practice-`, `effort-`, or `signal-`.
-- `scripts/check-outcomes.py results.json` runs the projects those eval runs produced and checks observable behavior: tests, HTTP requests, persisted data, and rendered output. A check that cannot run reports `not_checked`, not a failure. `--case NAME --workspace DIR` checks a single directory, such as a fixture.
+- `scripts/check-outcomes.py results.json` runs the projects those eval runs produced and checks observable behavior: tests, HTTP requests, persisted data, and rendered output. Each check reports one of four statuses:
+  - `pass`
+  - `fail` (an application failure)
+  - `unsupported` (the check cannot apply here)
+  - `error` (the checker itself failed)
+
+  Zero discovered tests never count as passing. Each project gets a verdict, and the exit status is non-zero for any failed required outcome (1), checker error (2), or inconclusive result where nothing required ran (3). `--case NAME --workspace DIR` checks a single directory, such as a fixture.
 - Report outcomes, records, engineering practices, and user effort separately; do not present an aggregate eval score as product benefit. These scripts and graders are the maintained automated checks. Anything verified by hand goes in the PR as manual evidence. When a regression against baseline repeats across runs, diagnose it instead of tuning checks until they pass.
 
 ## Repository hygiene
