@@ -36,9 +36,11 @@ cd "$WORK/project" && git init -q
 
 failures=0
 # Save one command's full output to the diagnostics directory. Usage: save_log label output
-# (Named by time, because some callers run in subshells where a counter would not advance.)
+# (Numbered from the files already there, because some callers run in subshells.)
 save_log() {
-  printf '%s\n' "$2" > "$LOGDIR/$(date +%s%N)-$(printf '%s' "$1" | tr -c 'A-Za-z0-9' '-' | cut -c1-50).log"
+  local n
+  n="$(find "$LOGDIR" -maxdepth 1 -name '*.log' | wc -l | tr -d ' ')"
+  printf '%s\n' "$2" > "$LOGDIR/$(printf '%02d' $((n + 1)))-$(printf '%s' "$1" | tr -c 'A-Za-z0-9' '-' | cut -c1-50).log"
 }
 pass() { printf 'PASS  %s\n' "$1"; }
 fail() { printf 'FAIL  %s\n' "$1"; [ -n "${2:-}" ] && printf '      %s\n' "$2" | head -n 5; failures=$((failures + 1)); }
