@@ -19,6 +19,12 @@ Read README.md for the product goal, then inspect the relevant source and curren
 - Use a focused branch and PR for development changes. Check the current base and working tree before integration; validate the final integrated change. Merge when authorized by the user or the established workflow; a PR is not a request for approval at every editing step.
 - Concurrent agents should use separate worktrees or checkouts and explicit ownership of changes. Never reset, stash, or overwrite another agent's or the user's work to make a checkout clean.
 
+## Validation
+
+- `claude plugin validate --strict ./plugin` and `claude plugin validate --strict .` check the plugin and marketplace manifests. CI runs these.
+- `scripts/check-lifecycle.sh` checks install, activation on startup, resume, compaction, and `/clear`, then disable, uninstall, and hook failure. It runs against a real Claude Code CLI in a throwaway configuration and makes a few short model calls. Run it on every platform and version the README claims.
+- `claude plugin eval ./plugin --scaffold --trust-plugin --allow-tools Write Edit Bash` runs the behavior cases in `plugin/evals/` against the no-plugin baseline. It uses the caller's model usage, and running cases that need Bash requires the host sandbox (on Linux, `bubblewrap` and `socat`). Graders check intended behavior. When a regression against baseline repeats across runs, diagnose it instead of tuning graders to pass.
+
 ## Repository hygiene
 
 - Keep each maintained fact in one authoritative place. CLAUDE.md only imports this file; do not duplicate guidance there.
