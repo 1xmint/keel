@@ -8,13 +8,13 @@ description: Use when starting new software from an idea or vision with no exist
 Apply the Keel principles already in context. This adds what matters specifically when nothing exists yet.
 
 ## Understand enough to choose a foundation
-Before choosing technology, make sure you know the facts that would change the foundation. Ask only about the ones you can't reasonably infer:
+Before choosing technology, make sure you know the facts that would change the foundation or be costly to reverse later. Common ones:
 - Who will use it, and roughly how many people.
 - Whether it handles money, personal data, or accounts, and whether the user wants those at all.
 - Where it needs to run (only their computer, a public website, a phone) and what they will pay to host it.
 - Whether someone other than a coding agent will maintain it.
 
-Anything else, decide and state.
+These are examples, not a checklist. Watch for anything else of that weight in what the user describes, such as legal or privacy obligations, integrations with services they already use, accessibility, languages, or offline use. Ask about what you can't reasonably infer; decide and state the rest.
 
 ## Choose a foundation for this owner
 - Prefer a mainstream stack with good documentation and free or cheap hosting suited to the expected use.

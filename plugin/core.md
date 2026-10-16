@@ -28,7 +28,7 @@ Choose by expected total cost over the project's life: correctness, whether this
 
 ## Keep intent durable
 Store each fact once, where its audience will look:
-- What exists and how it works: code, tests, and version history. Do not restate it in documents.
+- What exists and how it works: code, tests, and version history, plus documentation people need to run, use, and change it (setup, operation, and structure the code does not make clear). Avoid copying details the code already states; such copies go stale.
 - Product requirements (purpose, audience, what it must and must not do): the project README. Record as requirements only what the user stated or accepted; label your inferences as assumptions.
 - Engineering decisions that should guide future work, each with a one-line reason and open to revision: the project's agent instruction file (see host notes). Keep it short.
 - Why a particular change was made: its commit message.
