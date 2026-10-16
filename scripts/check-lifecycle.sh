@@ -14,15 +14,24 @@ SOURCE="${1:-$REPO}"
 CORE_MARK="Keel: engineering partner"
 HOST_MARK="Keel host notes: Claude Code"
 
-for tool in claude python3 git; do
+for tool in claude git; do
   command -v "$tool" >/dev/null || { echo "FAIL  required command not found: $tool"; exit 1; }
 done
+# On Windows, python3 is often a Microsoft Store stub; use whichever interpreter actually runs.
+PYTHON=""
+for candidate in python3 python py; do
+  if command -v "$candidate" >/dev/null && "$candidate" -c "import json" >/dev/null 2>&1; then PYTHON="$candidate"; break; fi
+done
+[ -n "$PYTHON" ] || { echo "FAIL  no working Python found (tried python3, python, py)"; exit 1; }
+# Under Git Bash on Windows, hand native programs Windows-style paths.
+native_path() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
+[ "$SOURCE" = "$REPO" ] && SOURCE="$(native_path "$REPO")"
 
 # Run as an independent session, not as a child of any session that launched this script.
 unset CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_REMOTE_SESSION_ID CLAUDE_CODE_CHILD_SESSION
 
-WORK="$(mktemp -d)"
-LOGDIR="${KEEL_LIFECYCLE_LOGS:-$(mktemp -d -t keel-lifecycle-XXXXXX)}"
+WORK="$(native_path "$(mktemp -d)")"
+LOGDIR="$(native_path "${KEEL_LIFECYCLE_LOGS:-$(mktemp -d -t keel-lifecycle-XXXXXX)}")"
 mkdir -p "$LOGDIR"
 keep_diagnostics() {
   [ -d "$WORK/config/projects" ] && cp -R "$WORK/config/projects" "$LOGDIR/transcripts" 2>/dev/null
@@ -66,7 +75,7 @@ run_session() {
   errtext="$(cat "$errfile")"; rm -f "$errfile"
   save_log "$label" "\$ claude -p $* --output-format json (exit $status)"$'\n'"$out"$'\n'"--- stderr ---"$'\n'"$errtext"
   if [ "$status" -ne 0 ]; then fail "$label: claude exited non-zero" "$errtext $out" >&2; return 1; fi
-  sid="$(printf '%s' "$out" | python3 -I -c '
+  sid="$(printf '%s' "$out" | "$PYTHON" -I -c '
 import json, sys
 d = json.load(sys.stdin)
 if d.get("is_error") or not d.get("session_id"):
@@ -160,7 +169,7 @@ cp -R "$REPO/plugin" "$BROKEN" && rm "$BROKEN/core.md"
 events="$(claude -p --plugin-dir "$BROKEN" "Reply with exactly: OK" --output-format stream-json --verbose 2>/dev/null < /dev/null)"; estatus=$?
 save_log "missing core file session" "(exit $estatus)"$'\n'"$events"
 if [ "$estatus" -eq 0 ]; then
-  verdict="$(printf '%s\n' "$events" | python3 -I -c '
+  verdict="$(printf '%s\n' "$events" | "$PYTHON" -I -c '
 import json, sys
 core_error = notes_ok = answered = False
 for line in sys.stdin:
