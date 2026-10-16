@@ -17,10 +17,19 @@ jobs:
       - run: claude plugin validate --strict ./plugin
       - run: claude plugin validate --strict .
       - run: python3 scripts/check-hook-shells.py plugin
+      - name: Session start delivers the guidance only while installed (no credentials needed)
+        env:
+          CLAUDE_CONFIG_DIR: ${{ github.workspace }}/../claude-config
+        run: |
+          claude plugin install keel --marketplace "$GITHUB_WORKSPACE" -y
+          python3 scripts/check-session-hooks.py present
+          claude plugin uninstall keel@keel
+          python3 scripts/check-session-hooks.py absent
 
   windows:
-    # Real Windows, no model access: install from this checkout, then run the installed plugin's
-    # hook commands through Git Bash, Windows PowerShell, and PowerShell 7.
+    # Real Windows, no model access: install from this checkout, run the installed plugin's hook
+    # commands through Git Bash, Windows PowerShell, and PowerShell 7, and check that a real session
+    # receives the guidance when installed and nothing once disabled or uninstalled.
     runs-on: windows-latest
     steps:
       - name: Use a throwaway Claude Code configuration
@@ -42,28 +51,18 @@ jobs:
           root="$(find "$CLAUDE_CONFIG_DIR/plugins/cache" -path '*keel*' -name plugin.json -path '*.claude-plugin*' | head -n 1 | xargs dirname | xargs dirname)"
           echo "installed plugin root: $root"
           python scripts/check-hook-shells.py "$root"
-      - name: Headless session without credentials (informational)
+      - name: Session start delivers the guidance (no credentials needed)
         shell: bash
-        continue-on-error: true
+        run: python scripts/check-session-hooks.py present
+      - name: Disabled plugin delivers nothing
+        shell: bash
         run: |
-          cd "$RUNNER_TEMP"
-          claude -p "Reply with exactly: OK" --output-format stream-json --verbose < /dev/null > events.jsonl 2> stderr.txt || true
-          python - <<'PY'
-          import json, os
-          path = os.path.join(os.environ["RUNNER_TEMP"], "events.jsonl")
-          for line in open(path, encoding="utf-8", errors="replace"):
-              try:
-                  d = json.loads(line)
-              except ValueError:
-                  continue
-              if d.get("subtype") == "hook_response" and d.get("hook_event") == "SessionStart":
-                  print("SessionStart hook", d.get("outcome"), "exit", d.get("exit_code"), repr((d.get("stdout") or "")[:40]))
-              if d.get("type") == "result":
-                  print("result: is_error", d.get("is_error"), str(d.get("result"))[:120])
-          PY
-          head -c 600 stderr.txt
-      - name: Uninstall
+          claude plugin disable keel@keel
+          python scripts/check-session-hooks.py absent
+          claude plugin enable keel@keel
+      - name: Uninstalled plugin delivers nothing
         shell: bash
         run: |
           claude plugin uninstall keel@keel
           ! grep -q '"keel@keel"' "$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
+          python scripts/check-session-hooks.py absent
