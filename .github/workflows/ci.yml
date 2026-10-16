@@ -64,5 +64,7 @@ jobs:
         shell: bash
         run: |
           claude plugin uninstall keel@keel
-          ! grep -q '"keel@keel"' "$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
+          if grep -q '"keel@keel"' "$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"; then
+            echo "keel@keel is still recorded as installed"; exit 1
+          fi
           python scripts/check-session-hooks.py absent

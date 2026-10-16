@@ -16,16 +16,26 @@ MARKERS = ("# Keel: engineering partner", "# Keel host notes: Claude Code")
 def main():
     expect = sys.argv[1]
     with tempfile.TemporaryDirectory() as cwd:
-        p = subprocess.run(["claude", "-p", "Reply with exactly: OK", "--output-format", "stream-json", "--verbose"],
-                           cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True, timeout=180,
-                           shell=sys.platform == "win32")
+        try:
+            p = subprocess.run(["claude", "-p", "Reply with exactly: OK", "--output-format", "stream-json", "--verbose"],
+                               cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True, timeout=180,
+                               shell=sys.platform == "win32")
+        except subprocess.TimeoutExpired:
+            print("FAIL  the session did not finish within 180 s")
+            sys.exit(1)
+        except FileNotFoundError:
+            print("FAIL  claude is not on PATH")
+            sys.exit(1)
     delivered = {m: False for m in MARKERS}
     failed_hooks = []
+    started = False  # evidence that a session actually started; absence means nothing without it
     for line in p.stdout.decode("utf-8", "replace").splitlines():
         try:
             d = json.loads(line)
         except ValueError:
             continue
+        if d.get("type") == "system" and d.get("subtype") == "init":
+            started = True
         if d.get("subtype") == "hook_response" and d.get("hook_event") == "SessionStart":
             out = d.get("stdout") or ""
             for m in MARKERS:
@@ -35,6 +45,9 @@ def main():
                 failed_hooks.append(d.get("stderr", "")[:200])
     for m, ok in delivered.items():
         print(f"{'delivered' if ok else 'absent   '}  {m}")
+    if not started:
+        print(f"FAIL  no session started (exit {p.returncode}): {p.stderr.decode('utf-8', 'replace')[:300]}")
+        sys.exit(1)
     if expect == "present":
         good = all(delivered.values()) and not failed_hooks
     else:

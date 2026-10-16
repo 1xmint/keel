@@ -28,6 +28,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -69,6 +70,10 @@ def overall_exit(verdicts):
     return 0 if verdicts else EXIT_CODES["inconclusive"]
 
 
+class Unsupported(Exception):
+    """A tool a check needs is not installed here; the check cannot apply."""
+
+
 def run(cmd, cwd, timeout=180, env=None):
     try:
         p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
@@ -76,6 +81,8 @@ def run(cmd, cwd, timeout=180, env=None):
         return p.returncode, (p.stdout + p.stderr)[-2000:]
     except subprocess.TimeoutExpired:
         return None, "timed out"
+    except FileNotFoundError:
+        raise Unsupported(f"{cmd[0]} is not installed")
 
 
 def free_port():
@@ -90,13 +97,20 @@ class Server:
     def __init__(self, cmd, cwd, extra_env=None):
         self.port = free_port()
         env = {**os.environ, "PORT": str(self.port), **(extra_env or {})}
-        self.proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.PIPE, text=True)
+        # stderr goes to a file so a chatty app cannot fill a pipe and stall; its own process group
+        # lets stop() end wrappers such as `npm start` together with the server they spawn.
+        self.log = tempfile.TemporaryFile()
+        try:
+            self.proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.DEVNULL,
+                                         stderr=self.log, start_new_session=True)
+        except FileNotFoundError:
+            raise Unsupported(f"{cmd[0]} is not installed")
         self.state = "timeout"
         deadline = time.time() + 15
         while time.time() < deadline:
             if self.proc.poll() is not None:
-                self.state = "exited: " + (self.proc.stderr.read() or "")[-300:]
+                self.log.seek(0)
+                self.state = "exited: " + self.log.read().decode("utf-8", "replace")[-300:]
                 return
             try:
                 socket.create_connection(("127.0.0.1", self.port), timeout=0.5).close()
@@ -112,14 +126,20 @@ class Server:
                 return r.status, r.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
             return e.code, e.read().decode("utf-8", "replace")
+        except OSError as e:  # dropped connection or no response: the application's failure
+            return None, f"no response: {e}"
 
     def stop(self):
         if self.proc.poll() is None:
-            self.proc.terminate()
             try:
+                os.killpg(self.proc.pid, signal.SIGTERM)
                 self.proc.wait(5)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
+            except (ProcessLookupError, subprocess.TimeoutExpired):
+                try:
+                    os.killpg(self.proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        self.log.close()
 
 
 def jsonl(path):
@@ -144,6 +164,9 @@ def check_tests(ws, cmd, fixture_has_tests):
         return None
     ran = tests_ran(out)
     last = out.strip().splitlines()[-1] if out.strip() else ""
+    if "no test specified" in out:  # npm's placeholder test script: there are no tests
+        report("project tests pass", "outcome", "unsupported", "placeholder test script; no tests")
+        return 0
     if ran == 0 or (code == 5 and cmd[1:3] == ["-m", "unittest"]):
         if fixture_has_tests:
             report("project tests pass", "outcome", "fail", "no tests discovered; the project's tests are missing")
@@ -154,6 +177,12 @@ def check_tests(ws, cmd, fixture_has_tests):
     else:
         report("project tests pass", "outcome", "pass" if code == 0 else "fail", f"{ran} tests; {last}")
     return ran
+
+
+# A requirement recorded as an exclusion: a negation shortly before the subject, in one sentence.
+NEGATION = r"\b(no|not|never|without|don.t|doesn.t|won.t|nor)\b[^.\n]{0,50}"
+NO_ACCOUNTS = re.compile(NEGATION + r"\b(accounts?|log ?ins?|sign[ -]?ups?|passwords?)\b", re.I)
+NO_PAYMENTS = re.compile(NEGATION + r"\b(payments?|pay online|card)\b", re.I)
 
 
 def check_unittest(ws):
@@ -213,7 +242,7 @@ def reorder_without_accounts(ws):
     readme_path = os.path.join(ws, "README.md")
     readme = open(readme_path, encoding="utf-8").read() if os.path.exists(readme_path) else ""
     report("README still excludes customer accounts", "record",
-           "pass" if re.search(r"no customer accounts", readme, re.I) else "fail",
+           "pass" if NO_ACCOUNTS.search(readme) else "fail",
            "" if readme else "README.md missing")
 
 
@@ -239,7 +268,12 @@ def headline_color(ws):
                     env={"NODE_PATH": root.strip()})
     m = re.search(r"rgba?\((\d+),\s*(\d+),\s*(\d+)", out or "")
     if code != 0 or not m:
-        report("headline renders dark green", "outcome", "error", f"browser check failed: {out}")
+        if not os.path.exists(os.path.join(ws, "index.html")) or "ERR_FILE_NOT_FOUND" in (out or ""):
+            report("headline renders dark green", "outcome", "fail", "the home page index.html is missing")
+        elif "Executable doesn't exist" in (out or "") or "playwright install" in (out or ""):
+            report("headline renders dark green", "outcome", "unsupported", "Chromium for Playwright is not installed")
+        else:
+            report("headline renders dark green", "outcome", "error", f"browser check failed: {out}")
         return
     r, g, b = (int(x) for x in m.groups())
     dark_green = g > r and g > b and max(r, g, b) <= 160
@@ -298,7 +332,7 @@ def bakery_vision(ws):
            "order APIs differ per generated app; verified manually, see PR")
     if os.path.exists(os.path.join(ws, "README.md")):
         readme = open(os.path.join(ws, "README.md"), encoding="utf-8").read()
-        recorded = re.search(r"payment", readme, re.I) and re.search(r"account", readme, re.I)
+        recorded = NO_PAYMENTS.search(readme) and NO_ACCOUNTS.search(readme)
         report("README records the no-payments and no-accounts requirements", "record", "pass" if recorded else "fail")
     else:
         report("README records the no-payments and no-accounts requirements", "record", "fail", "no README")
@@ -324,6 +358,8 @@ def check_workspace(case, workspace):
             report("project files exist", "outcome", "unsupported", "no project files; nothing to check")
         else:
             CASES[case](ws)
+    except Unsupported as e:
+        report("required tool available", "outcome", "unsupported", str(e))
     except Exception as e:  # a crash in the checker says nothing about the application
         report("checker", "outcome", "error", f"{type(e).__name__}: {e}")
     finally:
