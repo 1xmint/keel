@@ -38,8 +38,8 @@ Inside a session, use `/plugin install keel --marketplace 1xmint/keel` instead. 
 
 ### Verified environments
 
-- **Linux:** the full lifecycle checks pass with Claude Code 2.1.296 and 2.1.301: install, activation on startup, resume, compaction and `/clear`, disable, uninstall, and hook failure.
-- **Windows:** CI runs on GitHub's Windows runner with Claude Code 2.1.301. Install works. The installed hook commands run in Git Bash, Windows PowerShell, and PowerShell 7. A real session receives the guidance at startup when Git Bash is present, and none after disable or uninstall.
+- **Linux:** the full lifecycle checks pass with Claude Code 2.1.296, 2.1.301, and 2.1.302: install, activation on startup, resume, compaction and `/clear`, disable, uninstall, and hook failure.
+- **Windows:** CI runs on GitHub's Windows runner with Claude Code 2.1.301. Install works. The installed hook commands run in Git Bash, Windows PowerShell, and PowerShell 7. A real session receives the guidance at startup when Git Bash is present, and none after disable or uninstall. The lifecycle script runs under Git Bash up to its first model call, where it stops as expected without credentials.
   - Not yet verified on Windows: resume, compaction, and `/clear`, which need model access; a session on a machine without Git Bash, where Claude Code uses PowerShell; and a personal machine.
 - **macOS:** unverified.
 

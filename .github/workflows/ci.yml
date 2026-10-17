@@ -17,6 +17,17 @@ jobs:
       - run: claude plugin validate --strict ./plugin
       - run: claude plugin validate --strict .
       - run: python3 scripts/check-hook-shells.py plugin
+      - name: Lifecycle script stops only at the expected unauthenticated point
+        # CI has no model credentials. Install must pass, then the script must stop explicitly
+        # (exit 3, "STOP  not authenticated") with no failures. Anything else fails this job.
+        # Authenticated Windows acceptance is a separate, manual step documented in the PR.
+        run: |
+          status=0; scripts/check-lifecycle.sh > lifecycle.txt 2>&1 || status=$?
+          cat lifecycle.txt
+          if [ "$status" -ne 3 ] || ! grep -q '^PASS  install from' lifecycle.txt \
+             || ! grep -q '^STOP  not authenticated' lifecycle.txt || grep -q '^FAIL' lifecycle.txt; then
+            echo "Unexpected lifecycle result (exit $status)"; exit 1
+          fi
       - name: Session start delivers the guidance only while installed (no credentials needed)
         env:
           CLAUDE_CONFIG_DIR: ${{ github.workspace }}/../claude-config
@@ -51,13 +62,18 @@ jobs:
           root="$(find "$CLAUDE_CONFIG_DIR/plugins/cache" -path '*keel*' -name plugin.json -path '*.claude-plugin*' | head -n 1 | xargs dirname | xargs dirname)"
           echo "installed plugin root: $root"
           python scripts/check-hook-shells.py "$root"
-      - name: Lifecycle script runs under Git Bash up to the first model call (informational)
-        # Without credentials, model-dependent checks fail by design. This step shows the script's
-        # portability: tool discovery, paths, install, and session-start activation.
+      - name: Lifecycle script stops only at the expected unauthenticated point
+        # CI has no model credentials. Install must pass, then the script must stop explicitly
+        # (exit 3, "STOP  not authenticated") with no failures. Anything else fails this job.
+        # Authenticated Windows acceptance is a separate, manual step documented in the PR.
         shell: bash
-        continue-on-error: true
         run: |
-          scripts/check-lifecycle.sh 2>&1 | head -n 12
+          status=0; scripts/check-lifecycle.sh > lifecycle.txt 2>&1 || status=$?
+          cat lifecycle.txt
+          if [ "$status" -ne 3 ] || ! grep -q '^PASS  install from' lifecycle.txt \
+             || ! grep -q '^STOP  not authenticated' lifecycle.txt || grep -q '^FAIL' lifecycle.txt; then
+            echo "Unexpected lifecycle result (exit $status)"; exit 1
+          fi
       - name: Session start delivers the guidance (no credentials needed)
         shell: bash
         run: python scripts/check-session-hooks.py present

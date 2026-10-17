@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Checks Keel's install, activation, and removal lifecycle against a real Claude Code CLI.
 # Uses a throwaway CLAUDE_CONFIG_DIR, so the caller's own configuration is untouched.
-# Makes a few short model calls with the caller's existing Claude Code authentication.
+# Makes a few short model calls. A stored /login does not carry into the throwaway configuration,
+# so authenticate through the environment: CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`)
+# or ANTHROPIC_API_KEY.
 # Every step must observably succeed; a missing session, transcript, or failed command is a FAIL.
 # The full output of every command and the session transcripts are kept in a diagnostics
 # directory (KEEL_LIFECYCLE_LOGS, or a new temporary directory), printed at the end.
+#
+# Exit status: 0 all checks passed, 1 a check failed, 3 not authenticated (only install checked).
 #
 # Usage: scripts/check-lifecycle.sh [marketplace-source]   (default: this checkout)
 set -uo pipefail
@@ -105,6 +109,21 @@ if step "install from $SOURCE" claude plugin install keel --marketplace "$SOURCE
 else
   echo "Cannot continue without an installed plugin."; exit 1
 fi
+
+# Every later check needs a model call. Without authentication, stop here explicitly with exit
+# status 3 (inconclusive) instead of reporting each model-dependent check as a failure.
+auth="$(claude auth status --json 2>&1 < /dev/null)"
+save_log "auth status" "$auth"
+logged_in="$(printf '%s' "$auth" | "$PYTHON" -I -c 'import json, sys; print(json.load(sys.stdin)["loggedIn"])' 2>/dev/null)"
+case "$logged_in" in
+  True) ;;
+  False)
+    echo "STOP  not authenticated: model-dependent checks not run (install checked only)"
+    echo "      Set CLAUDE_CODE_OAUTH_TOKEN (from \`claude setup-token\`) or ANTHROPIC_API_KEY and rerun."
+    exit 3;;
+  *)
+    fail "authentication status readable" "$auth"; exit 1;;
+esac
 
 # Fresh session: core and host notes injected exactly once
 SID="$(run_session "startup session" "Reply with exactly: OK")"
